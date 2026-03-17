@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/check-squarespace-orders",
+      "schedule": "0 * * * *"
+    }
+  ]
+}
