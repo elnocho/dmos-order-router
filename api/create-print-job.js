@@ -1,7 +1,6 @@
 console.log("🔥 NEW VERSION DEPLOYED 🔥");
 
 async function logToGoogleSheets(payload) {
-async function logToGoogleSheets(payload) {
   const loggerUrl = process.env.GOOGLE_SHEETS_LOGGER_URL;
 
   if (!loggerUrl) {
@@ -42,14 +41,6 @@ export default async function handler(req, res) {
     const secret = process.env.LULU_CLIENT_SECRET;
     const contactEmail = process.env.LULU_CONTACT_EMAIL || "n8@domoreonshore.com";
     const defaultPhone = process.env.DEFAULT_PHONE_NUMBER || "6515555555";
-
-return res.status(200).json({
-  debug: true,
-  keyExists: !!key,
-  secretExists: !!secret,
-  keyPrefix: key ? key.slice(0, 6) : null,
-  secretLength: secret ? secret.length : 0
-});
 
     if (!key || !secret) {
       return res.status(500).json({ error: "Missing Lulu production credentials" });
@@ -139,17 +130,15 @@ return res.status(200).json({
       });
     }
 
-    const finalExternalId = externalId;
-
     const printJobPayload = {
       contact_email: requestContactEmail || contactEmail,
-      external_id: String(finalExternalId),
+      external_id: String(externalId),
       production_delay: 120,
       shipping_level: shippingLevel,
       shipping_address: finalShippingAddress,
       line_items: [
         {
-          external_id: `${finalExternalId}-item-1`,
+          external_id: `${externalId}-item-1`,
           title: mapping.title,
           quantity: Number(quantity),
           printable_normalization: {
@@ -165,17 +154,14 @@ return res.status(200).json({
       ]
     };
 
-    const printResponse = await fetch(
-      "https://api.lulu.com/print-jobs/",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${authData.access_token}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(printJobPayload)
-      }
-    );
+    const printResponse = await fetch("https://api.lulu.com/print-jobs/", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${authData.access_token}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(printJobPayload)
+    });
 
     const printData = await printResponse.json();
 
@@ -195,7 +181,7 @@ return res.status(200).json({
     const loggerResult = await logToGoogleSheets({
       squarespaceOrder: externalId,
       luluJobId: printData?.id || "",
-      externalId: printData?.external_id || finalExternalId,
+      externalId: printData?.external_id || externalId,
       product: mapping.title || "",
       quantity: lineItem?.quantity || quantity || 1,
       customerEmail: requestContactEmail || contactEmail,
@@ -226,6 +212,7 @@ return res.status(200).json({
       loggerResult
     });
   } catch (error) {
+    console.error("create-print-job fatal error:", error);
     return res.status(500).json({
       error: "Unexpected server error",
       details: error.message
