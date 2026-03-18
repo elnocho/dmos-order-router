@@ -1,3 +1,6 @@
+console.log("🔥 NEW VERSION DEPLOYED 🔥");
+
+async function logToGoogleSheets(payload) {
 async function logToGoogleSheets(payload) {
   const loggerUrl = process.env.GOOGLE_SHEETS_LOGGER_URL;
 
