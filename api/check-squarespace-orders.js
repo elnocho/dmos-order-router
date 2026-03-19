@@ -96,8 +96,10 @@ export default async function handler(req, res) {
           }
         };
 
-        const createResponse = await fetch(
-          "https://dmos-order-router.vercel.app/api/create-print-job",
+const baseUrl = process.env.APP_BASE_URL || "https://dmos-order-router-git.vercel.app";
+
+const createResponse = await fetch(
+  `${baseUrl}/api/create-print-job`,
           {
             method: "POST",
             headers: {
