@@ -80,11 +80,13 @@ export default async function handler(req, res) {
           // ✅ ONLY PROCESS YOUR PRODUCT
           if (sku !== "PR-ARCH-BOOK-01") continue;
 
- const payload = {
+ const externalId = order.id;
+
+const payload = {
   sku: "PR-ARCH-BOOK-01",
   quantity: item.quantity,
   contactEmail: order.customerEmail || "",
-  externalId: order.id,
+  externalId,
   shippingAddress: {
     name: order.shippingAddress?.name || "",
     street1: order.shippingAddress?.address1 || "",
