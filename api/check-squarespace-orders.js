@@ -120,10 +120,12 @@ const createResponse = await fetch(
     }
 
     return res.status(200).json({
-      ok: true,
-      ordersChecked: orders.length,
-      processed
-    });
+  ok: true,
+  baseUrlUsed: baseUrl,
+  createPrintJobUrl: `${baseUrl}/api/create-print-job`,
+  ordersChecked: orders.length,
+  processed
+});
   } catch (error) {
     return res.status(500).json({
       error: "Squarespace order check failed",
