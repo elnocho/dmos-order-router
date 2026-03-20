@@ -29,18 +29,16 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Missing GSHEET_URL environment variable" });
     }
 
-    // ✅ DEFINE BASE URL HERE (GLOBAL TO HANDLER)
     const baseUrl =
-      process.env.APP_BASE_URL ||
-      "https://dmos-order-router-git.vercel.app";
+      process.env.APP_BASE_URL || "https://dmos-order-router-git.vercel.app";
 
     const response = await fetch(
       "https://api.squarespace.com/1.0/commerce/orders?limit=50",
       {
         headers: {
           Authorization: `Bearer ${apiKey}`,
-          "User-Agent": "DMOS Order Router",
-        },
+          "User-Agent": "DMOS Order Router"
+        }
       }
     );
 
@@ -49,7 +47,7 @@ export default async function handler(req, res) {
     if (!response.ok) {
       return res.status(500).json({
         error: "Failed to fetch Squarespace orders",
-        details: data,
+        details: data
       });
     }
 
@@ -58,91 +56,81 @@ export default async function handler(req, res) {
 
     for (const order of orders) {
       const externalId = order.id;
+      const lineItems = order.lineItems || [];
 
-      try {
-        // ✅ Skip if already processed
-        const alreadyProcessed = await orderAlreadyProcessed(externalId);
+      const hasMatchingSku = lineItems.some(
+        (item) => item.sku === "PR-ARCH-BOOK-01"
+      );
 
-        if (alreadyProcessed) {
-          processed.push({
-            orderId: externalId,
-            skipped: true,
-            reason: "already processed",
-          });
+      if (!hasMatchingSku) {
+        continue;
+      }
+
+      const alreadyProcessed = await orderAlreadyProcessed(externalId);
+
+      if (alreadyProcessed) {
+        processed.push({
+          orderId: externalId,
+          skipped: true,
+          reason: "already processed"
+        });
+        continue;
+      }
+
+      for (const item of lineItems) {
+        if (item.sku !== "PR-ARCH-BOOK-01") {
           continue;
         }
 
-        const lineItems = order.lineItems || [];
+        const payload = {
+          sku: "PR-ARCH-BOOK-01",
+          quantity: item.quantity,
+          contactEmail: order.customerEmail || "",
+          externalId,
+          shippingAddress: {
+            name: order.shippingAddress?.name || "",
+            street1: order.shippingAddress?.address1 || "",
+            street2: order.shippingAddress?.address2 || "",
+            city: order.shippingAddress?.city || "",
+            state: order.shippingAddress?.state || "",
+            zip: order.shippingAddress?.postalCode || "",
+            country: order.shippingAddress?.country || "US",
+            phone: order.billingAddress?.phone || "0000000000"
+          }
+        };
 
-        for (const item of lineItems) {
-          const sku = item.sku;
+        const createResponse = await fetch(
+          `${baseUrl}/api/create-print-job`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload)
+          }
+        );
 
-          // ✅ ONLY PROCESS YOUR PRODUCT
-          if (sku !== "PR-ARCH-BOOK-01") continue;
+        const result = await createResponse.json();
 
- const externalId = order.id;
-
-const payload = {
-  sku: "PR-ARCH-BOOK-01",
-  quantity: item.quantity,
-  contactEmail: order.customerEmail || "",
-  externalId,
-  shippingAddress: {
-    name: order.shippingAddress?.name || "",
-    street1: order.shippingAddress?.address1 || "",
-    street2: order.shippingAddress?.address2 || "",
-    city: order.shippingAddress?.city || "",
-    state: order.shippingAddress?.state || "",
-    zip: order.shippingAddress?.postalCode || "",
-    country: order.shippingAddress?.country || "US",
-    phone: order.billingAddress?.phone || "0000000000"
-  }
-};
-
-          // ✅ CALL CREATE PRINT JOB
-          const createResponse = await fetch(
-            `${baseUrl}/api/create-print-job`,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify(payload),
-            }
-          );
-
-          const result = await createResponse.json();
-
-          processed.push({
-            orderId: externalId,
-            skipped: false,
-            result,
-          });
-        }
-      } catch (err) {
         processed.push({
           orderId: externalId,
           skipped: false,
-          result: {
-            error: err.message,
-          },
+          result
         });
       }
     }
-    console.log("Checking order:", externalId);
 
-    // ✅ DEBUG OUTPUT INCLUDED
     return res.status(200).json({
       ok: true,
       baseUrlUsed: baseUrl,
       createPrintJobUrl: `${baseUrl}/api/create-print-job`,
       ordersChecked: orders.length,
-      processed,
+      processed
     });
   } catch (error) {
     return res.status(500).json({
       error: "Squarespace order check failed",
-      details: error.message,
+      details: error.message
     });
   }
 }
