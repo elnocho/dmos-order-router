@@ -35,7 +35,7 @@ export default async function handler(req, res) {
       "https://dmos-order-router-git.vercel.app";
 
     const response = await fetch(
-      "https://api.squarespace.com/1.0/commerce/orders?limit=10",
+      "https://api.squarespace.com/1.0/commerce/orders?limit=50",
       {
         headers: {
           Authorization: `Bearer ${apiKey}`,
@@ -80,13 +80,22 @@ export default async function handler(req, res) {
           // ✅ ONLY PROCESS YOUR PRODUCT
           if (sku !== "PR-ARCH-BOOK-01") continue;
 
-          const payload = {
-            externalId,
-            productName: item.productName,
-            quantity: item.quantity,
-            customerEmail: order.customerEmail,
-            shippingAddress: order.shippingAddress,
-          };
+ const payload = {
+  sku: "PR-ARCH-BOOK-01",
+  quantity: item.quantity,
+  contactEmail: order.customerEmail || "",
+  externalId: order.id,
+  shippingAddress: {
+    name: order.shippingAddress?.name || "",
+    street1: order.shippingAddress?.address1 || "",
+    street2: order.shippingAddress?.address2 || "",
+    city: order.shippingAddress?.city || "",
+    state: order.shippingAddress?.state || "",
+    zip: order.shippingAddress?.postalCode || "",
+    country: order.shippingAddress?.country || "US",
+    phone: order.billingAddress?.phone || "0000000000"
+  }
+};
 
           // ✅ CALL CREATE PRINT JOB
           const createResponse = await fetch(
@@ -118,6 +127,7 @@ export default async function handler(req, res) {
         });
       }
     }
+    console.log("Checking order:", externalId);
 
     // ✅ DEBUG OUTPUT INCLUDED
     return res.status(200).json({
