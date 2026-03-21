@@ -88,14 +88,20 @@ export default async function handler(req, res) {
           contactEmail: order.customerEmail || "",
           externalId,
           shippingAddress: {
-            name: order.shippingAddress?.name || "",
+            name:
+              order.shippingAddress?.name ||
+              order.billingAddress?.name ||
+              "",
             street1: order.shippingAddress?.address1 || "",
             street2: order.shippingAddress?.address2 || "",
             city: order.shippingAddress?.city || "",
             state: order.shippingAddress?.state || "",
             zip: order.shippingAddress?.postalCode || "",
             country: order.shippingAddress?.country || "US",
-            phone: order.billingAddress?.phone || "0000000000"
+            phone:
+              order.shippingAddress?.phone ||
+              order.billingAddress?.phone ||
+              "0000000000"
           }
         };
 
@@ -115,6 +121,11 @@ export default async function handler(req, res) {
         processed.push({
           orderId: externalId,
           skipped: false,
+          payloadSent: payload,
+          debugShipping: {
+            shippingAddressRaw: order.shippingAddress || null,
+            billingAddressRaw: order.billingAddress || null
+          },
           result
         });
       }
@@ -125,6 +136,16 @@ export default async function handler(req, res) {
       baseUrlUsed: baseUrl,
       createPrintJobUrl: `${baseUrl}/api/create-print-job`,
       ordersChecked: orders.length,
+      orderIdsSeen: orders.map((order) => ({
+        id: order.id,
+        customerEmail: order.customerEmail,
+        createdOn: order.createdOn,
+        lineItems: (order.lineItems || []).map((item) => ({
+          sku: item.sku,
+          quantity: item.quantity,
+          productName: item.productName
+        }))
+      })),
       processed
     });
   } catch (error) {
