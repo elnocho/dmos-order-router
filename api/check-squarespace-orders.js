@@ -82,26 +82,27 @@ export default async function handler(req, res) {
           continue;
         }
 
+        const raw = order.shippingAddress || {};
+
+        const fullName =
+          raw.name ||
+          `${raw.firstName || ""} ${raw.lastName || ""}`.trim() ||
+          "Test Customer";
+
         const payload = {
           sku: "PR-ARCH-BOOK-01",
           quantity: item.quantity,
           contactEmail: order.customerEmail || "",
           externalId,
           shippingAddress: {
-            name:
-              order.shippingAddress?.name ||
-              order.billingAddress?.name ||
-              "",
-            street1: order.shippingAddress?.address1 || "",
-            street2: order.shippingAddress?.address2 || "",
-            city: order.shippingAddress?.city || "",
-            state: order.shippingAddress?.state || "",
-            zip: order.shippingAddress?.postalCode || "",
-            country: order.shippingAddress?.country || "US",
-            phone:
-              order.shippingAddress?.phone ||
-              order.billingAddress?.phone ||
-              "0000000000"
+            name: fullName,
+            street1: raw.address1 || "",
+            street2: raw.address2 || "",
+            city: raw.city || "",
+            state: raw.state || "",
+            zip: raw.postalCode || raw.zip || "",
+            country: raw.countryCode || raw.country || "US",
+            phone: raw.phone || "0000000000"
           }
         };
 
@@ -136,16 +137,6 @@ export default async function handler(req, res) {
       baseUrlUsed: baseUrl,
       createPrintJobUrl: `${baseUrl}/api/create-print-job`,
       ordersChecked: orders.length,
-      orderIdsSeen: orders.map((order) => ({
-        id: order.id,
-        customerEmail: order.customerEmail,
-        createdOn: order.createdOn,
-        lineItems: (order.lineItems || []).map((item) => ({
-          sku: item.sku,
-          quantity: item.quantity,
-          productName: item.productName
-        }))
-      })),
       processed
     });
   } catch (error) {
