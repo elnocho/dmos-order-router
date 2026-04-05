@@ -19,6 +19,10 @@ async function orderAlreadyProcessed(externalId) {
 
 export default async function handler(req, res) {
   try {
+    if (req.method !== "GET") {
+      return res.status(405).json({ error: "Method not allowed" });
+    }
+
     const apiKey = process.env.SQUARESPACE_API_KEY;
 
     if (!apiKey) {
@@ -58,11 +62,54 @@ export default async function handler(req, res) {
       const externalId = order.id;
       const lineItems = order.lineItems || [];
 
+      const squarespaceOrderNumber =
+        order.orderNumber ||
+        order.number ||
+        null;
+
+      const isCanceled =
+        Boolean(order.canceledOn) ||
+        Boolean(order.cancelledOn) ||
+        String(order.fulfillmentStatus || "").toUpperCase() === "CANCELED" ||
+        String(order.fulfillmentStatus || "").toUpperCase() === "CANCELLED" ||
+        String(order.status || "").toUpperCase() === "CANCELED" ||
+        String(order.status || "").toUpperCase() === "CANCELLED";
+
+      if (isCanceled) {
+        processed.push({
+          orderId: externalId,
+          orderNumber: squarespaceOrderNumber,
+          skipped: true,
+          reason: "canceled order"
+        });
+        continue;
+      }
+
+      const financialStatus = String(
+        order.financialStatus || order.billingStatus || ""
+      ).toUpperCase();
+
+      if (financialStatus && financialStatus !== "PAID") {
+        processed.push({
+          orderId: externalId,
+          orderNumber: squarespaceOrderNumber,
+          skipped: true,
+          reason: `financial status is ${financialStatus}`
+        });
+        continue;
+      }
+
       const hasMatchingSku = lineItems.some(
         (item) => item.sku === "PR-ARCH-BOOK-01"
       );
 
       if (!hasMatchingSku) {
+        processed.push({
+          orderId: externalId,
+          orderNumber: squarespaceOrderNumber,
+          skipped: true,
+          reason: "no matching sku"
+        });
         continue;
       }
 
@@ -71,6 +118,7 @@ export default async function handler(req, res) {
       if (alreadyProcessed) {
         processed.push({
           orderId: externalId,
+          orderNumber: squarespaceOrderNumber,
           skipped: true,
           reason: "already processed"
         });
@@ -94,6 +142,7 @@ export default async function handler(req, res) {
           quantity: item.quantity,
           contactEmail: order.customerEmail || "",
           externalId,
+          squarespaceOrderNumber,
           shippingAddress: {
             name: fullName,
             street1: raw.address1 || "",
@@ -121,6 +170,7 @@ export default async function handler(req, res) {
 
         processed.push({
           orderId: externalId,
+          orderNumber: squarespaceOrderNumber,
           skipped: false,
           payloadSent: payload,
           debugShipping: {
