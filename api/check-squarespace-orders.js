@@ -17,6 +17,11 @@ async function orderAlreadyProcessed(externalId) {
   return data.found === true;
 }
 
+const SUPPORTED_SKUS = new Set([
+  "PR-ARCH-BOOK-01",
+  "BE-PR-1.1"
+]);
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "GET") {
@@ -99,16 +104,26 @@ export default async function handler(req, res) {
         continue;
       }
 
-      const hasMatchingSku = lineItems.some(
-        (item) => item.sku === "PR-ARCH-BOOK-01"
-      );
+      const matchingItems = lineItems.filter((item) => SUPPORTED_SKUS.has(item.sku));
 
-      if (!hasMatchingSku) {
+      if (matchingItems.length === 0) {
         processed.push({
           orderId: externalId,
           orderNumber: squarespaceOrderNumber,
           skipped: true,
           reason: "no matching sku"
+        });
+        continue;
+      }
+
+      // Current router creates one Lulu job per Squarespace order. Avoid silently
+      // creating duplicate Lulu external IDs if a customer mixes supported books.
+      if (matchingItems.length > 1) {
+        processed.push({
+          orderId: externalId,
+          orderNumber: squarespaceOrderNumber,
+          skipped: true,
+          reason: "multiple supported book line items require manual fulfillment"
         });
         continue;
       }
@@ -125,61 +140,56 @@ export default async function handler(req, res) {
         continue;
       }
 
-      for (const item of lineItems) {
-        if (item.sku !== "PR-ARCH-BOOK-01") {
-          continue;
+      const item = matchingItems[0];
+      const raw = order.shippingAddress || {};
+
+      const fullName =
+        raw.name ||
+        `${raw.firstName || ""} ${raw.lastName || ""}`.trim() ||
+        "Test Customer";
+
+      const payload = {
+        sku: item.sku,
+        quantity: item.quantity,
+        contactEmail: order.customerEmail || "",
+        externalId,
+        squarespaceOrderNumber,
+        shippingAddress: {
+          name: fullName,
+          street1: raw.address1 || "",
+          street2: raw.address2 || "",
+          city: raw.city || "",
+          state: raw.state || "",
+          zip: raw.postalCode || raw.zip || "",
+          country: raw.countryCode || raw.country || "US",
+          phone: raw.phone || "0000000000"
         }
+      };
 
-        const raw = order.shippingAddress || {};
-
-        const fullName =
-          raw.name ||
-          `${raw.firstName || ""} ${raw.lastName || ""}`.trim() ||
-          "Test Customer";
-
-        const payload = {
-          sku: "PR-ARCH-BOOK-01",
-          quantity: item.quantity,
-          contactEmail: order.customerEmail || "",
-          externalId,
-          squarespaceOrderNumber,
-          shippingAddress: {
-            name: fullName,
-            street1: raw.address1 || "",
-            street2: raw.address2 || "",
-            city: raw.city || "",
-            state: raw.state || "",
-            zip: raw.postalCode || raw.zip || "",
-            country: raw.countryCode || raw.country || "US",
-            phone: raw.phone || "0000000000"
-          }
-        };
-
-        const createResponse = await fetch(
-          `${baseUrl}/api/create-print-job`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify(payload)
-          }
-        );
-
-        const result = await createResponse.json();
-
-        processed.push({
-          orderId: externalId,
-          orderNumber: squarespaceOrderNumber,
-          skipped: false,
-          payloadSent: payload,
-          debugShipping: {
-            shippingAddressRaw: order.shippingAddress || null,
-            billingAddressRaw: order.billingAddress || null
+      const createResponse = await fetch(
+        `${baseUrl}/api/create-print-job`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
           },
-          result
-        });
-      }
+          body: JSON.stringify(payload)
+        }
+      );
+
+      const result = await createResponse.json();
+
+      processed.push({
+        orderId: externalId,
+        orderNumber: squarespaceOrderNumber,
+        skipped: false,
+        payloadSent: payload,
+        debugShipping: {
+          shippingAddressRaw: order.shippingAddress || null,
+          billingAddressRaw: order.billingAddress || null
+        },
+        result
+      });
     }
 
     return res.status(200).json({

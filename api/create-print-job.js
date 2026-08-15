@@ -70,6 +70,13 @@ export default async function handler(req, res) {
         coverUrl: "https://drive.google.com/uc?export=download&id=1SiJ_XBQ6zqUuWJf79DgNk7unXGDMKC5l",
         podPackageId: "0850X1100BWSTDPB080CW444MXX",
         pageCount: 48
+      },
+      "BE-PR-1.1": {
+        title: "Beaches of Puerto Rico: A Coloring Book Adventure",
+        interiorPdfUrl: "https://drive.google.com/uc?export=download&id=1NtIbF_ghUggIEKsTsD8_tLqF8lptUx1X",
+        coverUrl: "https://drive.google.com/uc?export=download&id=1HSWyCvkwyrEs-UBh-Dw8Bf_KeXW06G90",
+        podPackageId: "0850X1100BWSTDPB080CW444MXX",
+        pageCount: 61
       }
     };
 
