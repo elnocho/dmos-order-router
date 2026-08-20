@@ -2,7 +2,11 @@
   "crons": [
     {
       "path": "/api/check-squarespace-orders",
-      "schedule": "*/5 * * * *"
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/poll-orders",
+      "schedule": "*/15 * * * *"
     }
   ]
 }
