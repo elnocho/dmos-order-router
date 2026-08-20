@@ -24,13 +24,7 @@ function normalizeDashboardStatus(rawStatus) {
   if (!status) return "CREATED";
   if (status.includes("CANCEL")) return "CANCELLED";
   if (status.includes("SHIP")) return "SHIPPED";
-  if (
-    status.includes("PRINT") ||
-    status.includes("PRODUCTION") ||
-    status === "IN_PRODUCTION" ||
-    status === "PRODUCTION_DELAYED" ||
-    status === "PRODUCTION_DELAY"
-  ) return "PRINTING";
+  if (status.includes("PRINT") || status.includes("PRODUCTION") || status === "IN_PRODUCTION" || status === "PRODUCTION_DELAYED" || status === "PRODUCTION_DELAY") return "PRINTING";
   if (status === "UNPAID" || status === "CREATED" || status === "ACCEPTED") return "CREATED";
   return "CREATED";
 }
@@ -72,13 +66,12 @@ async function loadPrintJob(accessToken, luluJobId) {
   return { printData, statusData };
 }
 
-function buildSheetPayload(printData, statusData, fallbackExternalId) {
+function buildSheetPayload(printData, statusData, fallbackExternalId, suppressNotifications = false) {
   const lineItem = printData?.line_items?.[0] || {};
   const shippingAddress = printData?.shipping_address || {};
   const tracking = extractTracking(printData, statusData);
   const shippingDates = printData?.estimated_shipping_dates || {};
   const rawStatus = statusData?.name || printData?.status?.name || "";
-
   const costs = printData?.costs || {};
   const shippingCost = costs?.shipping_cost || {};
   const lineItemCost = costs?.line_item_costs?.[0] || {};
@@ -115,6 +108,7 @@ function buildSheetPayload(printData, statusData, fallbackExternalId) {
     estimatedShipDateMax: shippingDates?.dispatch_max || "",
     estimatedArrivalDateMin: shippingDates?.arrival_min || "",
     estimatedArrivalDateMax: shippingDates?.arrival_max || "",
+    suppressNotifications: Boolean(suppressNotifications),
     notes: `Lulu raw status: ${rawStatus}. ${statusData?.message || printData?.status?.message || ""}`.trim()
   };
 }
@@ -127,40 +121,52 @@ export default async function handler(req, res) {
     const sheetUrl = process.env.GSHEET_URL || process.env.GOOGLE_SHEETS_LOGGER_URL;
     if (!key || !secret) return res.status(500).json({ error: "Missing Lulu production credentials" });
     if (!sheetUrl) return res.status(500).json({ error: "Missing Google Sheets URL" });
+
     const cronSecret = process.env.CRON_SECRET;
     const authHeader = req.headers.authorization || "";
     if (cronSecret && authHeader !== `Bearer ${cronSecret}`) return res.status(401).json({ error: "Unauthorized" });
+
     const accessToken = await getLuluToken(key, secret);
-    const { printJobId, externalId, dryRun } = req.query || {};
+    const { printJobId, externalId, dryRun, cleanup } = req.query || {};
+    const cleanupMode = String(cleanup || "") === "1";
+
     if (printJobId) {
       const { printData, statusData } = await loadPrintJob(accessToken, printJobId);
-      const payload = buildSheetPayload(printData, statusData, externalId);
+      const payload = buildSheetPayload(printData, statusData, externalId, cleanupMode);
       let sheetResult = null;
       if (String(dryRun || "") !== "1") sheetResult = await updateGoogleSheet(sheetUrl, payload);
-      return res.status(200).json({ ok: true, mode: "production", dryRun: String(dryRun || "") === "1", payload, sheetResult, luluResponse: printData, luluStatus: statusData });
+      return res.status(200).json({ ok: true, mode: "production", cleanupMode, dryRun: String(dryRun || "") === "1", payload, sheetResult, luluResponse: printData, luluStatus: statusData });
     }
+
     const pendingData = await fetchJson(`${sheetUrl}?action=pending`);
     const pendingOrders = Array.isArray(pendingData?.orders) ? pendingData.orders : [];
     const cutoffString = process.env.DMOS_NOTIFICATIONS_START_DATE || DEFAULT_NOTIFICATION_CUTOFF;
     const cutoff = new Date(cutoffString);
     const results = [];
+
     for (const order of pendingOrders) {
       const luluJobId = String(order?.luluJobId || "").trim();
       const fallbackExternalId = String(order?.externalId || "").trim();
       if (!/^\d+$/.test(luluJobId)) { results.push({ luluJobId, skipped: true, reason: "invalid Lulu job id" }); continue; }
+
       try {
         const { printData, statusData } = await loadPrintJob(accessToken, luluJobId);
         const created = printData?.date_created ? new Date(printData.date_created) : null;
-        if (created && !Number.isNaN(created.getTime()) && !Number.isNaN(cutoff.getTime()) && created < cutoff) {
+
+        if (!cleanupMode && created && !Number.isNaN(created.getTime()) && !Number.isNaN(cutoff.getTime()) && created < cutoff) {
           results.push({ luluJobId, externalId: printData?.external_id || fallbackExternalId, status: normalizeDashboardStatus(statusData?.name || printData?.status?.name || ""), skipped: true, reason: `created before notification cutoff ${cutoffString}` });
           continue;
         }
-        const payload = buildSheetPayload(printData, statusData, fallbackExternalId);
+
+        const payload = buildSheetPayload(printData, statusData, fallbackExternalId, cleanupMode);
         const sheetResult = await updateGoogleSheet(sheetUrl, payload);
-        results.push({ luluJobId, externalId: payload.externalId, status: payload.status, totalCostInclTax: payload.totalCostInclTax, productionDueTime: payload.productionDueTime, estimatedShipDateMin: payload.estimatedShipDateMin, estimatedShipDateMax: payload.estimatedShipDateMax, hasTracking: Boolean(payload.trackingId || payload.trackingUrl), updated: true, sheetResult });
-      } catch (error) { results.push({ luluJobId, externalId: fallbackExternalId, updated: false, error: error.message }); }
+        results.push({ luluJobId, externalId: payload.externalId, status: payload.status, totalCostInclTax: payload.totalCostInclTax, cleanupMode, updated: true, sheetResult });
+      } catch (error) {
+        results.push({ luluJobId, externalId: fallbackExternalId, cleanupMode, updated: false, error: error.message });
+      }
     }
-    return res.status(200).json({ ok: true, mode: "production", notificationCutoff: cutoffString, ordersChecked: pendingOrders.length, results });
+
+    return res.status(200).json({ ok: true, mode: "production", cleanupMode, notificationCutoff: cutoffString, ordersChecked: pendingOrders.length, results });
   } catch (error) {
     console.error("poll-orders fatal error:", error);
     return res.status(500).json({ error: "Unexpected server error", details: error.message });
