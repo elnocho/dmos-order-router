@@ -31,6 +31,27 @@ async function logToGoogleSheets(payload) {
   }
 }
 
+function firstTrackingInfo(printData) {
+  const lineItem = printData?.line_items?.[0] || {};
+  const statusMessages = lineItem?.status?.messages || {};
+
+  const trackingId =
+    lineItem?.tracking_id ||
+    statusMessages?.tracking_id ||
+    "";
+
+  const rawTrackingUrls =
+    lineItem?.tracking_urls ||
+    statusMessages?.tracking_urls ||
+    [];
+
+  const trackingUrl = Array.isArray(rawTrackingUrls)
+    ? rawTrackingUrls.join(", ")
+    : String(rawTrackingUrls || "");
+
+  return { trackingId, trackingUrl };
+}
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST") {
@@ -51,6 +72,7 @@ export default async function handler(req, res) {
       quantity = 1,
       shippingLevel = "MAIL",
       externalId,
+      squarespaceOrderNumber,
       contactEmail: requestContactEmail,
       shippingAddress = {}
     } = req.body || {};
@@ -184,14 +206,15 @@ export default async function handler(req, res) {
     const costs = printData?.costs || {};
     const shippingCost = costs?.shipping_cost || {};
     const lineItemCost = costs?.line_item_costs?.[0] || {};
+    const tracking = firstTrackingInfo(printData);
 
     const loggerResult = await logToGoogleSheets({
-      squarespaceOrder: externalId,
+      squarespaceOrder: squarespaceOrderNumber || externalId,
       luluJobId: printData?.id || "",
       externalId: printData?.external_id || externalId,
       product: mapping.title || "",
       quantity: lineItem?.quantity || quantity || 1,
-      customerEmail: requestContactEmail || contactEmail,
+      customerEmail: requestContactEmail || "",
       status: printData?.status?.name || "",
       shippingLevel: printData?.shipping_level || shippingLevel || "",
       printCostExclTax: lineItemCost?.total_cost_excl_tax || "",
@@ -201,13 +224,18 @@ export default async function handler(req, res) {
       totalCostExclTax: costs?.total_cost_excl_tax || "",
       totalCostInclTax: costs?.total_cost_incl_tax || "",
       currency: costs?.currency || "",
-      trackingId: lineItem?.tracking_id || "",
-      trackingUrl: Array.isArray(lineItem?.tracking_urls) ? lineItem.tracking_urls.join(", ") : "",
+      trackingId: tracking.trackingId,
+      trackingUrl: tracking.trackingUrl,
       recipientName: finalShippingAddress?.name || "",
+      address1: finalShippingAddress?.street1 || "",
+      address2: finalShippingAddress?.street2 || "",
       city: finalShippingAddress?.city || "",
       stateCode: finalShippingAddress?.state_code || "",
       postcode: finalShippingAddress?.postcode || "",
       countryCode: finalShippingAddress?.country_code || "",
+      phone: finalShippingAddress?.phone_number || "",
+      estimatedProductionDate: printData?.production_due_time || "",
+      estimatedShipDate: printData?.estimated_shipping_dates?.dispatch_max || "",
       notes: "Initial create-print-job log"
     });
 
