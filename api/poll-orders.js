@@ -79,7 +79,8 @@ function buildSheetPayload(printData, statusData, fallbackExternalId) {
     postcode: shippingAddress?.postcode || "",
     countryCode: shippingAddress?.country_code || "",
     phone: shippingAddress?.phone_number || "",
-    estimatedProductionDate: printData?.production_due_time || "",
+    productionDueTime: printData?.production_due_time || "",
+    estimatedProductionDate: "",
     estimatedShipDate: shippingDates?.dispatch_max || "",
     estimatedShipDateMin: shippingDates?.dispatch_min || "",
     estimatedShipDateMax: shippingDates?.dispatch_max || "",
@@ -127,7 +128,7 @@ export default async function handler(req, res) {
         }
         const payload = buildSheetPayload(printData, statusData, fallbackExternalId);
         const sheetResult = await updateGoogleSheet(sheetUrl, payload);
-        results.push({ luluJobId, externalId: payload.externalId, status: payload.status, estimatedProductionDate: payload.estimatedProductionDate, estimatedShipDateMin: payload.estimatedShipDateMin, estimatedShipDateMax: payload.estimatedShipDateMax, hasTracking: Boolean(payload.trackingId || payload.trackingUrl), updated: true, sheetResult });
+        results.push({ luluJobId, externalId: payload.externalId, status: payload.status, productionDueTime: payload.productionDueTime, estimatedShipDateMin: payload.estimatedShipDateMin, estimatedShipDateMax: payload.estimatedShipDateMax, hasTracking: Boolean(payload.trackingId || payload.trackingUrl), updated: true, sheetResult });
       } catch (error) { results.push({ luluJobId, externalId: fallbackExternalId, updated: false, error: error.message }); }
     }
     return res.status(200).json({ ok: true, mode: "production", notificationCutoff: cutoffString, ordersChecked: pendingOrders.length, results });
