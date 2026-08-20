@@ -1,79 +1,294 @@
+const DEFAULT_NOTIFICATION_CUTOFF = "2026-08-19T00:00:00Z";
+
+async function getLuluToken(key, secret) {
+  const basicAuth = Buffer.from(`${key}:${secret}`).toString("base64");
+
+  const response = await fetch(
+    "https://api.lulu.com/auth/realms/glasstree/protocol/openid-connect/token",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${basicAuth}`,
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: "grant_type=client_credentials"
+    }
+  );
+
+  const data = await response.json();
+
+  if (!response.ok || !data.access_token) {
+    throw new Error(`Failed to get Lulu production token: ${JSON.stringify(data)}`);
+  }
+
+  return data.access_token;
+}
+
+async function fetchJson(url, options = {}) {
+  const response = await fetch(url, options);
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(`${response.status} from ${url}: ${JSON.stringify(data)}`);
+  }
+
+  return data;
+}
+
+function extractTracking(printData, statusData) {
+  const statusLineItems = statusData?.line_item_statuses || [];
+
+  for (const itemStatus of statusLineItems) {
+    const messages = itemStatus?.messages || {};
+    const trackingId = messages?.tracking_id || "";
+    const urls = messages?.tracking_urls || [];
+
+    if (trackingId || (Array.isArray(urls) && urls.length)) {
+      return {
+        trackingId,
+        trackingUrl: Array.isArray(urls) ? urls.join(", ") : String(urls || "")
+      };
+    }
+  }
+
+  const lineItems = printData?.line_items || [];
+
+  for (const lineItem of lineItems) {
+    const messages = lineItem?.status?.messages || {};
+    const trackingId = lineItem?.tracking_id || messages?.tracking_id || "";
+    const urls = lineItem?.tracking_urls || messages?.tracking_urls || [];
+
+    if (trackingId || (Array.isArray(urls) && urls.length)) {
+      return {
+        trackingId,
+        trackingUrl: Array.isArray(urls) ? urls.join(", ") : String(urls || "")
+      };
+    }
+  }
+
+  return { trackingId: "", trackingUrl: "" };
+}
+
+async function updateGoogleSheet(sheetUrl, payload) {
+  const response = await fetch(sheetUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const text = await response.text();
+
+  if (!response.ok) {
+    throw new Error(`Google Sheets update failed (${response.status}): ${text}`);
+  }
+
+  let parsed = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch (_) {
+    parsed = { raw: text };
+  }
+
+  if (parsed?.ok === false) {
+    throw new Error(`Google Sheets update failed: ${text}`);
+  }
+
+  return parsed;
+}
+
+async function loadPrintJob(accessToken, luluJobId) {
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    "Content-Type": "application/json"
+  };
+
+  const printData = await fetchJson(
+    `https://api.lulu.com/print-jobs/${encodeURIComponent(luluJobId)}/`,
+    { headers }
+  );
+
+  let statusData = printData?.status || {};
+
+  try {
+    statusData = await fetchJson(
+      `https://api.lulu.com/print-jobs/${encodeURIComponent(luluJobId)}/status/`,
+      { headers }
+    );
+  } catch (error) {
+    console.warn(`Status endpoint failed for Lulu job ${luluJobId}:`, error.message);
+  }
+
+  return { printData, statusData };
+}
+
+function buildSheetPayload(printData, statusData, fallbackExternalId) {
+  const lineItem = printData?.line_items?.[0] || {};
+  const shippingAddress = printData?.shipping_address || {};
+  const tracking = extractTracking(printData, statusData);
+
+  return {
+    luluJobId: printData?.id || "",
+    externalId: printData?.external_id || fallbackExternalId || "",
+    product: lineItem?.title || "",
+    quantity: lineItem?.quantity || "",
+    customerEmail: printData?.contact_email || "",
+    status: statusData?.name || printData?.status?.name || "",
+    shippingLevel:
+      printData?.shipping_level ||
+      printData?.shipping_option_level ||
+      "",
+    trackingId: tracking.trackingId,
+    trackingUrl: tracking.trackingUrl,
+    recipientName: shippingAddress?.name || "",
+    address1: shippingAddress?.street1 || "",
+    address2: shippingAddress?.street2 || "",
+    city: shippingAddress?.city || "",
+    stateCode: shippingAddress?.state_code || "",
+    postcode: shippingAddress?.postcode || "",
+    countryCode: shippingAddress?.country_code || "",
+    phone: shippingAddress?.phone_number || "",
+    estimatedProductionDate: printData?.production_due_time || "",
+    estimatedShipDate: printData?.estimated_shipping_dates?.dispatch_max || "",
+    notes: `Lulu status sync: ${statusData?.message || printData?.status?.message || ""}`.trim()
+  };
+}
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "GET") {
       return res.status(405).json({ error: "Method not allowed" });
     }
 
-    const key = process.env.LULU_SANDBOX_CLIENT_KEY;
-    const secret = process.env.LULU_SANDBOX_CLIENT_SECRET;
+    const key = process.env.LULU_CLIENT_KEY;
+    const secret = process.env.LULU_CLIENT_SECRET;
+    const sheetUrl =
+      process.env.GSHEET_URL ||
+      process.env.GOOGLE_SHEETS_LOGGER_URL;
 
     if (!key || !secret) {
-      return res.status(500).json({ error: "Missing Lulu sandbox credentials" });
+      return res.status(500).json({ error: "Missing Lulu production credentials" });
     }
 
-    const { printJobId, externalId } = req.query || {};
-
-    if (!printJobId && !externalId) {
-      return res.status(400).json({
-        error: "Missing printJobId or externalId query parameter"
-      });
+    if (!sheetUrl) {
+      return res.status(500).json({ error: "Missing Google Sheets URL" });
     }
 
-    const basicAuth = Buffer.from(`${key}:${secret}`).toString("base64");
+    const cronSecret = process.env.CRON_SECRET;
+    const authHeader = req.headers.authorization || "";
 
-    const authResponse = await fetch(
-      "https://api.sandbox.lulu.com/auth/realms/glasstree/protocol/openid-connect/token",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Basic ${basicAuth}`,
-          "Content-Type": "application/x-www-form-urlencoded"
-        },
-        body: "grant_type=client_credentials"
-      }
-    );
-
-    const authData = await authResponse.json();
-
-    if (!authResponse.ok || !authData.access_token) {
-      return res.status(500).json({
-        error: "Failed to get Lulu sandbox token",
-        details: authData
-      });
+    if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+      return res.status(401).json({ error: "Unauthorized" });
     }
 
-    let url = "";
+    const accessToken = await getLuluToken(key, secret);
+    const { printJobId, externalId, dryRun } = req.query || {};
 
+    // Manual single-job inspection/test path. Useful before enabling bulk sync.
     if (printJobId) {
-      url = `https://api.sandbox.lulu.com/print-jobs/${encodeURIComponent(printJobId)}/`;
-    } else {
-      url = `https://api.sandbox.lulu.com/print-jobs/?external_id=${encodeURIComponent(externalId)}`;
+      const { printData, statusData } = await loadPrintJob(accessToken, printJobId);
+      const payload = buildSheetPayload(printData, statusData, externalId);
+
+      let sheetResult = null;
+      if (String(dryRun || "") !== "1") {
+        sheetResult = await updateGoogleSheet(sheetUrl, payload);
+      }
+
+      return res.status(200).json({
+        ok: true,
+        mode: "production",
+        dryRun: String(dryRun || "") === "1",
+        payload,
+        sheetResult,
+        luluResponse: printData,
+        luluStatus: statusData
+      });
     }
 
-    const pollResponse = await fetch(url, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${authData.access_token}`,
-        "Content-Type": "application/json"
+    const pendingUrl = `${sheetUrl}?action=pending`;
+    const pendingData = await fetchJson(pendingUrl);
+    const pendingOrders = Array.isArray(pendingData?.orders)
+      ? pendingData.orders
+      : [];
+
+    const cutoffString =
+      process.env.DMOS_NOTIFICATIONS_START_DATE ||
+      DEFAULT_NOTIFICATION_CUTOFF;
+    const cutoff = new Date(cutoffString);
+
+    const results = [];
+
+    for (const order of pendingOrders) {
+      const luluJobId = String(order?.luluJobId || "").trim();
+      const fallbackExternalId = String(order?.externalId || "").trim();
+
+      if (!/^\d+$/.test(luluJobId)) {
+        results.push({ luluJobId, skipped: true, reason: "invalid Lulu job id" });
+        continue;
       }
-    });
 
-    const pollData = await pollResponse.json();
+      try {
+        const { printData, statusData } = await loadPrintJob(accessToken, luluJobId);
+        const created = printData?.date_created
+          ? new Date(printData.date_created)
+          : null;
 
-    if (!pollResponse.ok) {
-      return res.status(pollResponse.status).json({
-        error: "Failed to poll Lulu sandbox print job",
-        details: pollData
-      });
+        // Migration safety: do not trigger customer emails for old test/history rows.
+        // Jobs created on/after the cutoff are part of the new post-purchase workflow.
+        if (
+          created &&
+          !Number.isNaN(created.getTime()) &&
+          !Number.isNaN(cutoff.getTime()) &&
+          created < cutoff
+        ) {
+          results.push({
+            luluJobId,
+            externalId: printData?.external_id || fallbackExternalId,
+            status: statusData?.name || printData?.status?.name || "",
+            skipped: true,
+            reason: `created before notification cutoff ${cutoffString}`
+          });
+          continue;
+        }
+
+        const payload = buildSheetPayload(
+          printData,
+          statusData,
+          fallbackExternalId
+        );
+
+        const sheetResult = await updateGoogleSheet(sheetUrl, payload);
+
+        results.push({
+          luluJobId,
+          externalId: payload.externalId,
+          status: payload.status,
+          estimatedProductionDate: payload.estimatedProductionDate,
+          estimatedShipDate: payload.estimatedShipDate,
+          hasTracking: Boolean(payload.trackingId || payload.trackingUrl),
+          updated: true,
+          sheetResult
+        });
+      } catch (error) {
+        results.push({
+          luluJobId,
+          externalId: fallbackExternalId,
+          updated: false,
+          error: error.message
+        });
+      }
     }
 
     return res.status(200).json({
       ok: true,
-      mode: "sandbox",
-      query: { printJobId: printJobId || null, externalId: externalId || null },
-      luluResponse: pollData
+      mode: "production",
+      notificationCutoff: cutoffString,
+      ordersChecked: pendingOrders.length,
+      results
     });
   } catch (error) {
+    console.error("poll-orders fatal error:", error);
     return res.status(500).json({
       error: "Unexpected server error",
       details: error.message
