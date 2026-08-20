@@ -19,6 +19,24 @@ async function fetchJson(url, options = {}) {
   return data;
 }
 
+function normalizeDashboardStatus(rawStatus) {
+  const status = String(rawStatus || "").trim().toUpperCase();
+
+  if (!status) return "CREATED";
+  if (status.includes("CANCEL")) return "CANCELLED";
+  if (status.includes("SHIP")) return "SHIPPED";
+  if (
+    status.includes("PRINT") ||
+    status.includes("PRODUCTION") ||
+    status === "IN_PRODUCTION" ||
+    status === "PRODUCTION_DELAYED" ||
+    status === "PRODUCTION_DELAY"
+  ) return "PRINTING";
+  if (status === "UNPAID" || status === "CREATED" || status === "ACCEPTED") return "CREATED";
+
+  return "CREATED";
+}
+
 function extractTracking(printData, statusData) {
   const statusLineItems = statusData?.line_item_statuses || [];
   for (const itemStatus of statusLineItems) {
@@ -61,13 +79,15 @@ function buildSheetPayload(printData, statusData, fallbackExternalId) {
   const shippingAddress = printData?.shipping_address || {};
   const tracking = extractTracking(printData, statusData);
   const shippingDates = printData?.estimated_shipping_dates || {};
+  const rawStatus = statusData?.name || printData?.status?.name || "";
+
   return {
     luluJobId: printData?.id || "",
     externalId: printData?.external_id || fallbackExternalId || "",
     product: lineItem?.title || "",
     quantity: lineItem?.quantity || "",
     customerEmail: printData?.contact_email || "",
-    status: statusData?.name || printData?.status?.name || "",
+    status: normalizeDashboardStatus(rawStatus),
     shippingLevel: printData?.shipping_level || printData?.shipping_option_level || "",
     trackingId: tracking.trackingId,
     trackingUrl: tracking.trackingUrl,
@@ -86,7 +106,7 @@ function buildSheetPayload(printData, statusData, fallbackExternalId) {
     estimatedShipDateMax: shippingDates?.dispatch_max || "",
     estimatedArrivalDateMin: shippingDates?.arrival_min || "",
     estimatedArrivalDateMax: shippingDates?.arrival_max || "",
-    notes: `Lulu status sync: ${statusData?.message || printData?.status?.message || ""}`.trim()
+    notes: `Lulu raw status: ${rawStatus}. ${statusData?.message || printData?.status?.message || ""}`.trim()
   };
 }
 
@@ -123,7 +143,7 @@ export default async function handler(req, res) {
         const { printData, statusData } = await loadPrintJob(accessToken, luluJobId);
         const created = printData?.date_created ? new Date(printData.date_created) : null;
         if (created && !Number.isNaN(created.getTime()) && !Number.isNaN(cutoff.getTime()) && created < cutoff) {
-          results.push({ luluJobId, externalId: printData?.external_id || fallbackExternalId, status: statusData?.name || printData?.status?.name || "", skipped: true, reason: `created before notification cutoff ${cutoffString}` });
+          results.push({ luluJobId, externalId: printData?.external_id || fallbackExternalId, status: normalizeDashboardStatus(statusData?.name || printData?.status?.name || ""), skipped: true, reason: `created before notification cutoff ${cutoffString}` });
           continue;
         }
         const payload = buildSheetPayload(printData, statusData, fallbackExternalId);
