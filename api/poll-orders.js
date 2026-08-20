@@ -21,7 +21,6 @@ async function fetchJson(url, options = {}) {
 
 function normalizeDashboardStatus(rawStatus) {
   const status = String(rawStatus || "").trim().toUpperCase();
-
   if (!status) return "CREATED";
   if (status.includes("CANCEL")) return "CANCELLED";
   if (status.includes("SHIP")) return "SHIPPED";
@@ -33,7 +32,6 @@ function normalizeDashboardStatus(rawStatus) {
     status === "PRODUCTION_DELAY"
   ) return "PRINTING";
   if (status === "UNPAID" || status === "CREATED" || status === "ACCEPTED") return "CREATED";
-
   return "CREATED";
 }
 
@@ -81,6 +79,10 @@ function buildSheetPayload(printData, statusData, fallbackExternalId) {
   const shippingDates = printData?.estimated_shipping_dates || {};
   const rawStatus = statusData?.name || printData?.status?.name || "";
 
+  const costs = printData?.costs || {};
+  const shippingCost = costs?.shipping_cost || {};
+  const lineItemCost = costs?.line_item_costs?.[0] || {};
+
   return {
     luluJobId: printData?.id || "",
     externalId: printData?.external_id || fallbackExternalId || "",
@@ -89,6 +91,13 @@ function buildSheetPayload(printData, statusData, fallbackExternalId) {
     customerEmail: printData?.contact_email || "",
     status: normalizeDashboardStatus(rawStatus),
     shippingLevel: printData?.shipping_level || printData?.shipping_option_level || "",
+    printCostExclTax: lineItemCost?.total_cost_excl_tax || "",
+    printCostInclTax: lineItemCost?.total_cost_incl_tax || "",
+    shippingCostExclTax: shippingCost?.total_cost_excl_tax || "",
+    shippingCostInclTax: shippingCost?.total_cost_incl_tax || "",
+    totalCostExclTax: costs?.total_cost_excl_tax || "",
+    totalCostInclTax: costs?.total_cost_incl_tax || "",
+    currency: costs?.currency || "",
     trackingId: tracking.trackingId,
     trackingUrl: tracking.trackingUrl,
     recipientName: shippingAddress?.name || "",
@@ -148,7 +157,7 @@ export default async function handler(req, res) {
         }
         const payload = buildSheetPayload(printData, statusData, fallbackExternalId);
         const sheetResult = await updateGoogleSheet(sheetUrl, payload);
-        results.push({ luluJobId, externalId: payload.externalId, status: payload.status, productionDueTime: payload.productionDueTime, estimatedShipDateMin: payload.estimatedShipDateMin, estimatedShipDateMax: payload.estimatedShipDateMax, hasTracking: Boolean(payload.trackingId || payload.trackingUrl), updated: true, sheetResult });
+        results.push({ luluJobId, externalId: payload.externalId, status: payload.status, totalCostInclTax: payload.totalCostInclTax, productionDueTime: payload.productionDueTime, estimatedShipDateMin: payload.estimatedShipDateMin, estimatedShipDateMax: payload.estimatedShipDateMax, hasTracking: Boolean(payload.trackingId || payload.trackingUrl), updated: true, sheetResult });
       } catch (error) { results.push({ luluJobId, externalId: fallbackExternalId, updated: false, error: error.message }); }
     }
     return res.status(200).json({ ok: true, mode: "production", notificationCutoff: cutoffString, ordersChecked: pendingOrders.length, results });
