@@ -23,6 +23,7 @@ function normalizeDashboardStatus(rawStatus) {
   const status = String(rawStatus || "").trim().toUpperCase();
   if (!status) return "CREATED";
   if (status.includes("CANCEL")) return "CANCELLED";
+  if (status.includes("DELIVER")) return "SHIPPED";
   if (status.includes("SHIP")) return "SHIPPED";
   if (status.includes("PRINT") || status.includes("PRODUCTION") || status === "IN_PRODUCTION" || status === "PRODUCTION_DELAYED" || status === "PRODUCTION_DELAY") return "PRINTING";
   if (status === "UNPAID" || status === "CREATED" || status === "ACCEPTED") return "CREATED";
@@ -35,22 +36,39 @@ function extractTracking(printData, statusData) {
     const messages = itemStatus?.messages || {};
     const trackingId = messages?.tracking_id || "";
     const urls = messages?.tracking_urls || [];
-    if (trackingId || (Array.isArray(urls) && urls.length)) return { trackingId, trackingUrl: Array.isArray(urls) ? urls.join(", ") : String(urls || "") };
+    if (trackingId || (Array.isArray(urls) && urls.length)) {
+      return {
+        trackingId,
+        trackingUrl: Array.isArray(urls) ? urls.join(", ") : String(urls || "")
+      };
+    }
   }
+
   const lineItems = printData?.line_items || [];
   for (const lineItem of lineItems) {
     const messages = lineItem?.status?.messages || {};
     const trackingId = lineItem?.tracking_id || messages?.tracking_id || "";
     const urls = lineItem?.tracking_urls || messages?.tracking_urls || [];
-    if (trackingId || (Array.isArray(urls) && urls.length)) return { trackingId, trackingUrl: Array.isArray(urls) ? urls.join(", ") : String(urls || "") };
+    if (trackingId || (Array.isArray(urls) && urls.length)) {
+      return {
+        trackingId,
+        trackingUrl: Array.isArray(urls) ? urls.join(", ") : String(urls || "")
+      };
+    }
   }
+
   return { trackingId: "", trackingUrl: "" };
 }
 
 async function updateGoogleSheet(sheetUrl, payload) {
-  const response = await fetch(sheetUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  const response = await fetch(sheetUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
   const text = await response.text();
   if (!response.ok) throw new Error(`Google Sheets update failed (${response.status}): ${text}`);
+
   let parsed = null;
   try { parsed = JSON.parse(text); } catch (_) { parsed = { raw: text }; }
   if (parsed?.ok === false) throw new Error(`Google Sheets update failed: ${text}`);
@@ -60,9 +78,14 @@ async function updateGoogleSheet(sheetUrl, payload) {
 async function loadPrintJob(accessToken, luluJobId) {
   const headers = { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" };
   const printData = await fetchJson(`https://api.lulu.com/print-jobs/${encodeURIComponent(luluJobId)}/`, { headers });
+
   let statusData = printData?.status || {};
-  try { statusData = await fetchJson(`https://api.lulu.com/print-jobs/${encodeURIComponent(luluJobId)}/status/`, { headers }); }
-  catch (error) { console.warn(`Status endpoint failed for Lulu job ${luluJobId}:`, error.message); }
+  try {
+    statusData = await fetchJson(`https://api.lulu.com/print-jobs/${encodeURIComponent(luluJobId)}/status/`, { headers });
+  } catch (error) {
+    console.warn(`Status endpoint failed for Lulu job ${luluJobId}:`, error.message);
+  }
+
   return { printData, statusData };
 }
 
@@ -81,7 +104,11 @@ function buildSheetPayload(printData, statusData, fallbackExternalId, suppressNo
     externalId: printData?.external_id || fallbackExternalId || "",
     product: lineItem?.title || "",
     quantity: lineItem?.quantity || "",
-    customerEmail: printData?.contact_email || "",
+
+    // Deliberately blank on status sync. The buyer email came from Squarespace
+    // and already lives in the Sheet. Lulu contact_email is now DMOS-only.
+    customerEmail: "",
+
     status: normalizeDashboardStatus(rawStatus),
     shippingLevel: printData?.shipping_level || printData?.shipping_option_level || "",
     printCostExclTax: lineItemCost?.total_cost_excl_tax || "",
@@ -116,9 +143,11 @@ function buildSheetPayload(printData, statusData, fallbackExternalId, suppressNo
 export default async function handler(req, res) {
   try {
     if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
+
     const key = process.env.LULU_CLIENT_KEY;
     const secret = process.env.LULU_CLIENT_SECRET;
     const sheetUrl = process.env.GSHEET_URL || process.env.GOOGLE_SHEETS_LOGGER_URL;
+
     if (!key || !secret) return res.status(500).json({ error: "Missing Lulu production credentials" });
     if (!sheetUrl) return res.status(500).json({ error: "Missing Google Sheets URL" });
 
@@ -133,9 +162,22 @@ export default async function handler(req, res) {
     if (printJobId) {
       const { printData, statusData } = await loadPrintJob(accessToken, printJobId);
       const payload = buildSheetPayload(printData, statusData, externalId, cleanupMode);
+
       let sheetResult = null;
-      if (String(dryRun || "") !== "1") sheetResult = await updateGoogleSheet(sheetUrl, payload);
-      return res.status(200).json({ ok: true, mode: "production", cleanupMode, dryRun: String(dryRun || "") === "1", payload, sheetResult, luluResponse: printData, luluStatus: statusData });
+      if (String(dryRun || "") !== "1") {
+        sheetResult = await updateGoogleSheet(sheetUrl, payload);
+      }
+
+      return res.status(200).json({
+        ok: true,
+        mode: "production",
+        cleanupMode,
+        dryRun: String(dryRun || "") === "1",
+        payload,
+        sheetResult,
+        luluResponse: printData,
+        luluStatus: statusData
+      });
     }
 
     const pendingData = await fetchJson(`${sheetUrl}?action=pending`);
@@ -147,26 +189,60 @@ export default async function handler(req, res) {
     for (const order of pendingOrders) {
       const luluJobId = String(order?.luluJobId || "").trim();
       const fallbackExternalId = String(order?.externalId || "").trim();
-      if (!/^\d+$/.test(luluJobId)) { results.push({ luluJobId, skipped: true, reason: "invalid Lulu job id" }); continue; }
+
+      if (!/^\d+$/.test(luluJobId)) {
+        results.push({ luluJobId, skipped: true, reason: "invalid Lulu job id" });
+        continue;
+      }
 
       try {
         const { printData, statusData } = await loadPrintJob(accessToken, luluJobId);
         const created = printData?.date_created ? new Date(printData.date_created) : null;
 
         if (!cleanupMode && created && !Number.isNaN(created.getTime()) && !Number.isNaN(cutoff.getTime()) && created < cutoff) {
-          results.push({ luluJobId, externalId: printData?.external_id || fallbackExternalId, status: normalizeDashboardStatus(statusData?.name || printData?.status?.name || ""), skipped: true, reason: `created before notification cutoff ${cutoffString}` });
+          results.push({
+            luluJobId,
+            externalId: printData?.external_id || fallbackExternalId,
+            status: normalizeDashboardStatus(statusData?.name || printData?.status?.name || ""),
+            skipped: true,
+            reason: `created before notification cutoff ${cutoffString}`
+          });
           continue;
         }
 
         const payload = buildSheetPayload(printData, statusData, fallbackExternalId, cleanupMode);
         const sheetResult = await updateGoogleSheet(sheetUrl, payload);
-        results.push({ luluJobId, externalId: payload.externalId, status: payload.status, totalCostInclTax: payload.totalCostInclTax, cleanupMode, updated: true, sheetResult });
+
+        results.push({
+          luluJobId,
+          externalId: payload.externalId,
+          status: payload.status,
+          trackingId: payload.trackingId,
+          trackingUrl: payload.trackingUrl,
+          totalCostInclTax: payload.totalCostInclTax,
+          cleanupMode,
+          updated: true,
+          sheetResult
+        });
       } catch (error) {
-        results.push({ luluJobId, externalId: fallbackExternalId, cleanupMode, updated: false, error: error.message });
+        results.push({
+          luluJobId,
+          externalId: fallbackExternalId,
+          cleanupMode,
+          updated: false,
+          error: error.message
+        });
       }
     }
 
-    return res.status(200).json({ ok: true, mode: "production", cleanupMode, notificationCutoff: cutoffString, ordersChecked: pendingOrders.length, results });
+    return res.status(200).json({
+      ok: true,
+      mode: "production",
+      cleanupMode,
+      notificationCutoff: cutoffString,
+      ordersChecked: pendingOrders.length,
+      results
+    });
   } catch (error) {
     console.error("poll-orders fatal error:", error);
     return res.status(500).json({ error: "Unexpected server error", details: error.message });
