@@ -2,29 +2,19 @@ console.log("🔥 NEW VERSION DEPLOYED 🔥");
 
 async function logToGoogleSheets(payload) {
   const loggerUrl = process.env.GOOGLE_SHEETS_LOGGER_URL;
-
   if (!loggerUrl) {
     console.warn("GOOGLE_SHEETS_LOGGER_URL is not set");
     return { ok: false, error: "GOOGLE_SHEETS_LOGGER_URL is not set" };
   }
-
   try {
     const response = await fetch(loggerUrl, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
-
     const text = await response.text();
     console.log("Google Sheets logger response:", text);
-
-    return {
-      ok: response.ok,
-      status: response.status,
-      text
-    };
+    return { ok: response.ok, status: response.status, text };
   } catch (error) {
     console.error("Failed to log to Google Sheets:", error.message);
     return { ok: false, error: error.message };
@@ -34,38 +24,22 @@ async function logToGoogleSheets(payload) {
 function firstTrackingInfo(printData) {
   const lineItem = printData?.line_items?.[0] || {};
   const statusMessages = lineItem?.status?.messages || {};
-
-  const trackingId =
-    lineItem?.tracking_id ||
-    statusMessages?.tracking_id ||
-    "";
-
-  const rawTrackingUrls =
-    lineItem?.tracking_urls ||
-    statusMessages?.tracking_urls ||
-    [];
-
-  const trackingUrl = Array.isArray(rawTrackingUrls)
-    ? rawTrackingUrls.join(", ")
-    : String(rawTrackingUrls || "");
-
+  const trackingId = lineItem?.tracking_id || statusMessages?.tracking_id || "";
+  const rawTrackingUrls = lineItem?.tracking_urls || statusMessages?.tracking_urls || [];
+  const trackingUrl = Array.isArray(rawTrackingUrls) ? rawTrackingUrls.join(", ") : String(rawTrackingUrls || "");
   return { trackingId, trackingUrl };
 }
 
 export default async function handler(req, res) {
   try {
-    if (req.method !== "POST") {
-      return res.status(405).json({ error: "Method not allowed" });
-    }
+    if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
     const key = process.env.LULU_CLIENT_KEY;
     const secret = process.env.LULU_CLIENT_SECRET;
-    const contactEmail = process.env.LULU_CONTACT_EMAIL || "n8@domoreonshore.com";
+    const luluContactEmail = process.env.LULU_CONTACT_EMAIL || "letsgo@domoreonshore.com";
     const defaultPhone = process.env.DEFAULT_PHONE_NUMBER || "6515555555";
 
-    if (!key || !secret) {
-      return res.status(500).json({ error: "Missing Lulu production credentials" });
-    }
+    if (!key || !secret) return res.status(500).json({ error: "Missing Lulu production credentials" });
 
     const {
       sku,
@@ -73,17 +47,12 @@ export default async function handler(req, res) {
       shippingLevel = "MAIL",
       externalId,
       squarespaceOrderNumber,
-      contactEmail: requestContactEmail,
+      contactEmail: customerEmail,
       shippingAddress = {}
     } = req.body || {};
 
-    if (!sku) {
-      return res.status(400).json({ error: "Missing sku" });
-    }
-
-    if (!externalId) {
-      return res.status(400).json({ error: "Missing externalId" });
-    }
+    if (!sku) return res.status(400).json({ error: "Missing sku" });
+    if (!externalId) return res.status(400).json({ error: "Missing externalId" });
 
     const SKU_TO_LULU = {
       "PR-ARCH-BOOK-01": {
@@ -103,14 +72,8 @@ export default async function handler(req, res) {
     };
 
     const mapping = SKU_TO_LULU[sku];
-
-    if (!mapping) {
-      return res.status(400).json({ error: `No Lulu mapping found for sku: ${sku}` });
-    }
-
-    if (!mapping.interiorPdfUrl || !mapping.coverUrl || !mapping.podPackageId) {
-      return res.status(500).json({ error: "Incomplete SKU mapping" });
-    }
+    if (!mapping) return res.status(400).json({ error: `No Lulu mapping found for sku: ${sku}` });
+    if (!mapping.interiorPdfUrl || !mapping.coverUrl || !mapping.podPackageId) return res.status(500).json({ error: "Incomplete SKU mapping" });
 
     const finalShippingAddress = {
       name: shippingAddress.name || "Test Customer",
@@ -123,84 +86,46 @@ export default async function handler(req, res) {
       phone_number: shippingAddress.phone || shippingAddress.phone_number || defaultPhone
     };
 
-    if (
-      !finalShippingAddress.name ||
-      !finalShippingAddress.street1 ||
-      !finalShippingAddress.city ||
-      !finalShippingAddress.postcode ||
-      !finalShippingAddress.country_code ||
-      !finalShippingAddress.phone_number
-    ) {
-      return res.status(400).json({
-        error: "Missing required shipping address fields"
-      });
+    if (!finalShippingAddress.name || !finalShippingAddress.street1 || !finalShippingAddress.city || !finalShippingAddress.postcode || !finalShippingAddress.country_code || !finalShippingAddress.phone_number) {
+      return res.status(400).json({ error: "Missing required shipping address fields" });
     }
 
     const basicAuth = Buffer.from(`${key}:${secret}`).toString("base64");
-
-    const authResponse = await fetch(
-      "https://api.lulu.com/auth/realms/glasstree/protocol/openid-connect/token",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Basic ${basicAuth}`,
-          "Content-Type": "application/x-www-form-urlencoded"
-        },
-        body: "grant_type=client_credentials"
-      }
-    );
-
+    const authResponse = await fetch("https://api.lulu.com/auth/realms/glasstree/protocol/openid-connect/token", {
+      method: "POST",
+      headers: { Authorization: `Basic ${basicAuth}`, "Content-Type": "application/x-www-form-urlencoded" },
+      body: "grant_type=client_credentials"
+    });
     const authData = await authResponse.json();
-
-    if (!authResponse.ok || !authData.access_token) {
-      return res.status(500).json({
-        error: "Failed to get Lulu production token",
-        details: authData
-      });
-    }
+    if (!authResponse.ok || !authData.access_token) return res.status(500).json({ error: "Failed to get Lulu production token", details: authData });
 
     const printJobPayload = {
-      contact_email: requestContactEmail || contactEmail,
+      // Keep Lulu's own operational/shipping notifications inside DMOS.
+      // Customer communication is handled by the DMOS branded email workflow.
+      contact_email: luluContactEmail,
       external_id: String(externalId),
       production_delay: 120,
       shipping_level: shippingLevel,
       shipping_address: finalShippingAddress,
-      line_items: [
-        {
-          external_id: `${externalId}-item-1`,
-          title: mapping.title,
-          quantity: Number(quantity),
-          printable_normalization: {
-            pod_package_id: mapping.podPackageId,
-            cover: {
-              source_url: mapping.coverUrl
-            },
-            interior: {
-              source_url: mapping.interiorPdfUrl
-            }
-          }
+      line_items: [{
+        external_id: `${externalId}-item-1`,
+        title: mapping.title,
+        quantity: Number(quantity),
+        printable_normalization: {
+          pod_package_id: mapping.podPackageId,
+          cover: { source_url: mapping.coverUrl },
+          interior: { source_url: mapping.interiorPdfUrl }
         }
-      ]
+      }]
     };
 
     const printResponse = await fetch("https://api.lulu.com/print-jobs/", {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${authData.access_token}`,
-        "Content-Type": "application/json"
-      },
+      headers: { Authorization: `Bearer ${authData.access_token}`, "Content-Type": "application/json" },
       body: JSON.stringify(printJobPayload)
     });
-
     const printData = await printResponse.json();
-
-    if (!printResponse.ok) {
-      return res.status(printResponse.status).json({
-        error: "Failed to create Lulu print job",
-        details: printData,
-        requestPayload: printJobPayload
-      });
-    }
+    if (!printResponse.ok) return res.status(printResponse.status).json({ error: "Failed to create Lulu print job", details: printData, requestPayload: printJobPayload });
 
     const lineItem = printData?.line_items?.[0] || {};
     const costs = printData?.costs || {};
@@ -214,7 +139,8 @@ export default async function handler(req, res) {
       externalId: printData?.external_id || externalId,
       product: mapping.title || "",
       quantity: lineItem?.quantity || quantity || 1,
-      customerEmail: requestContactEmail || "",
+      // Preserve the Squarespace purchaser email in our own system.
+      customerEmail: customerEmail || "",
       status: printData?.status?.name || "",
       shippingLevel: printData?.shipping_level || shippingLevel || "",
       printCostExclTax: lineItemCost?.total_cost_excl_tax || "",
@@ -239,18 +165,9 @@ export default async function handler(req, res) {
       notes: "Initial create-print-job log"
     });
 
-    return res.status(200).json({
-      ok: true,
-      mode: "production",
-      requestPayload: printJobPayload,
-      luluResponse: printData,
-      loggerResult
-    });
+    return res.status(200).json({ ok: true, mode: "production", requestPayload: printJobPayload, luluResponse: printData, loggerResult });
   } catch (error) {
     console.error("create-print-job fatal error:", error);
-    return res.status(500).json({
-      error: "Unexpected server error",
-      details: error.message
-    });
+    return res.status(500).json({ error: "Unexpected server error", details: error.message });
   }
 }
