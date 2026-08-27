@@ -23,7 +23,7 @@ function normalizeDashboardStatus(rawStatus) {
   const status = String(rawStatus || "").trim().toUpperCase();
   if (!status) return "CREATED";
   if (status.includes("CANCEL")) return "CANCELLED";
-  if (status.includes("DELIVER")) return "SHIPPED";
+  if (status.includes("DELIVER")) return "DELIVERED";
   if (status.includes("SHIP")) return "SHIPPED";
   if (status.includes("PRINT") || status.includes("PRODUCTION") || status === "IN_PRODUCTION" || status === "PRODUCTION_DELAYED" || status === "PRODUCTION_DELAY") return "PRINTING";
   if (status === "UNPAID" || status === "CREATED" || status === "ACCEPTED") return "CREATED";
