@@ -22,12 +22,39 @@ async function logToGoogleSheets(payload) {
 }
 
 function firstTrackingInfo(printData) {
-  const lineItem = printData?.line_items?.[0] || {};
-  const statusMessages = lineItem?.status?.messages || {};
-  const trackingId = lineItem?.tracking_id || statusMessages?.tracking_id || "";
-  const rawTrackingUrls = lineItem?.tracking_urls || statusMessages?.tracking_urls || [];
-  const trackingUrl = Array.isArray(rawTrackingUrls) ? rawTrackingUrls.join(", ") : String(rawTrackingUrls || "");
-  return { trackingId, trackingUrl };
+  const lineItems = printData?.line_items || [];
+  for (const lineItem of lineItems) {
+    const statusMessages = lineItem?.status?.messages || {};
+    const trackingId = lineItem?.tracking_id || statusMessages?.tracking_id || "";
+    const rawTrackingUrls = lineItem?.tracking_urls || statusMessages?.tracking_urls || [];
+    const trackingUrl = Array.isArray(rawTrackingUrls) ? rawTrackingUrls.join(", ") : String(rawTrackingUrls || "");
+    if (trackingId || trackingUrl) return { trackingId, trackingUrl };
+  }
+  return { trackingId: "", trackingUrl: "" };
+}
+
+function sumCost(costItems, field) {
+  let sawValue = false;
+  let total = 0;
+  for (const item of costItems || []) {
+    const value = item?.[field];
+    if (value !== undefined && value !== null && value !== "") {
+      const numeric = Number(value);
+      if (!Number.isNaN(numeric)) {
+        total += numeric;
+        sawValue = true;
+      }
+    }
+  }
+  return sawValue ? total.toFixed(2) : "";
+}
+
+function summarizeLineItems(lineItems) {
+  const items = Array.isArray(lineItems) ? lineItems : [];
+  return {
+    product: items.map((item) => item?.title || "").filter(Boolean).join(" + "),
+    quantity: items.reduce((sum, item) => sum + (Number(item?.quantity) || 0), 0)
+  };
 }
 
 export default async function handler(req, res) {
@@ -44,6 +71,7 @@ export default async function handler(req, res) {
     const {
       sku,
       quantity = 1,
+      items,
       shippingLevel = "MAIL",
       externalId,
       squarespaceOrderNumber,
@@ -51,8 +79,15 @@ export default async function handler(req, res) {
       shippingAddress = {}
     } = req.body || {};
 
-    if (!sku) return res.status(400).json({ error: "Missing sku" });
     if (!externalId) return res.status(400).json({ error: "Missing externalId" });
+
+    const requestedItems = Array.isArray(items) && items.length
+      ? items
+      : (sku ? [{ sku, quantity }] : []);
+
+    if (!requestedItems.length) {
+      return res.status(400).json({ error: "Missing items" });
+    }
 
     const SKU_TO_LULU = {
       "PR-ARCH-BOOK-01": {
@@ -71,9 +106,24 @@ export default async function handler(req, res) {
       }
     };
 
-    const mapping = SKU_TO_LULU[sku];
-    if (!mapping) return res.status(400).json({ error: `No Lulu mapping found for sku: ${sku}` });
-    if (!mapping.interiorPdfUrl || !mapping.coverUrl || !mapping.podPackageId) return res.status(500).json({ error: "Incomplete SKU mapping" });
+    const normalizedItems = requestedItems.map((item) => {
+      const itemSku = String(item?.sku || "").trim();
+      const itemQuantity = Number(item?.quantity) || 1;
+      const mapping = SKU_TO_LULU[itemSku];
+
+      if (!mapping) {
+        const error = new Error(`No Lulu mapping found for sku: ${itemSku}`);
+        error.statusCode = 400;
+        throw error;
+      }
+      if (!mapping.interiorPdfUrl || !mapping.coverUrl || !mapping.podPackageId) {
+        const error = new Error(`Incomplete SKU mapping for sku: ${itemSku}`);
+        error.statusCode = 500;
+        throw error;
+      }
+
+      return { sku: itemSku, quantity: itemQuantity, mapping };
+    });
 
     const finalShippingAddress = {
       name: shippingAddress.name || "Test Customer",
@@ -100,23 +150,21 @@ export default async function handler(req, res) {
     if (!authResponse.ok || !authData.access_token) return res.status(500).json({ error: "Failed to get Lulu production token", details: authData });
 
     const printJobPayload = {
-      // Keep Lulu's own operational/shipping notifications inside DMOS.
-      // Customer communication is handled by the DMOS branded email workflow.
       contact_email: luluContactEmail,
       external_id: String(externalId),
       production_delay: 120,
       shipping_level: shippingLevel,
       shipping_address: finalShippingAddress,
-      line_items: [{
-        external_id: `${externalId}-item-1`,
-        title: mapping.title,
-        quantity: Number(quantity),
+      line_items: normalizedItems.map((item, index) => ({
+        external_id: `${externalId}-item-${index + 1}`,
+        title: item.mapping.title,
+        quantity: item.quantity,
         printable_normalization: {
-          pod_package_id: mapping.podPackageId,
-          cover: { source_url: mapping.coverUrl },
-          interior: { source_url: mapping.interiorPdfUrl }
+          pod_package_id: item.mapping.podPackageId,
+          cover: { source_url: item.mapping.coverUrl },
+          interior: { source_url: item.mapping.interiorPdfUrl }
         }
-      }]
+      }))
     };
 
     const printResponse = await fetch("https://api.lulu.com/print-jobs/", {
@@ -127,24 +175,23 @@ export default async function handler(req, res) {
     const printData = await printResponse.json();
     if (!printResponse.ok) return res.status(printResponse.status).json({ error: "Failed to create Lulu print job", details: printData, requestPayload: printJobPayload });
 
-    const lineItem = printData?.line_items?.[0] || {};
     const costs = printData?.costs || {};
     const shippingCost = costs?.shipping_cost || {};
-    const lineItemCost = costs?.line_item_costs?.[0] || {};
+    const lineItemCosts = costs?.line_item_costs || [];
     const tracking = firstTrackingInfo(printData);
+    const summary = summarizeLineItems(printData?.line_items || printJobPayload.line_items);
 
     const loggerResult = await logToGoogleSheets({
       squarespaceOrder: squarespaceOrderNumber || externalId,
       luluJobId: printData?.id || "",
       externalId: printData?.external_id || externalId,
-      product: mapping.title || "",
-      quantity: lineItem?.quantity || quantity || 1,
-      // Preserve the Squarespace purchaser email in our own system.
+      product: summary.product,
+      quantity: summary.quantity,
       customerEmail: customerEmail || "",
       status: printData?.status?.name || "",
       shippingLevel: printData?.shipping_level || shippingLevel || "",
-      printCostExclTax: lineItemCost?.total_cost_excl_tax || "",
-      printCostInclTax: lineItemCost?.total_cost_incl_tax || "",
+      printCostExclTax: sumCost(lineItemCosts, "total_cost_excl_tax"),
+      printCostInclTax: sumCost(lineItemCosts, "total_cost_incl_tax"),
       shippingCostExclTax: shippingCost?.total_cost_excl_tax || "",
       shippingCostInclTax: shippingCost?.total_cost_incl_tax || "",
       totalCostExclTax: costs?.total_cost_excl_tax || "",
@@ -162,12 +209,12 @@ export default async function handler(req, res) {
       phone: finalShippingAddress?.phone_number || "",
       estimatedProductionDate: printData?.production_due_time || "",
       estimatedShipDate: printData?.estimated_shipping_dates?.dispatch_max || "",
-      notes: "Initial create-print-job log"
+      notes: normalizedItems.length > 1 ? "Initial create-print-job log; multi-book order" : "Initial create-print-job log"
     });
 
     return res.status(200).json({ ok: true, mode: "production", requestPayload: printJobPayload, luluResponse: printData, loggerResult });
   } catch (error) {
     console.error("create-print-job fatal error:", error);
-    return res.status(500).json({ error: "Unexpected server error", details: error.message });
+    return res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : "Unexpected server error", details: error.statusCode ? undefined : error.message });
   }
 }
