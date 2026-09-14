@@ -60,6 +60,30 @@ function extractTracking(printData, statusData) {
   return { trackingId: "", trackingUrl: "" };
 }
 
+function summarizeLineItems(lineItems) {
+  const items = Array.isArray(lineItems) ? lineItems : [];
+  return {
+    product: items.map((item) => item?.title || "").filter(Boolean).join(" + "),
+    quantity: items.reduce((sum, item) => sum + (Number(item?.quantity) || 0), 0)
+  };
+}
+
+function sumCost(costItems, field) {
+  let sawValue = false;
+  let total = 0;
+  for (const item of costItems || []) {
+    const value = item?.[field];
+    if (value !== undefined && value !== null && value !== "") {
+      const numeric = Number(value);
+      if (!Number.isNaN(numeric)) {
+        total += numeric;
+        sawValue = true;
+      }
+    }
+  }
+  return sawValue ? total.toFixed(2) : "";
+}
+
 async function updateGoogleSheet(sheetUrl, payload) {
   const response = await fetch(sheetUrl, {
     method: "POST",
@@ -90,29 +114,28 @@ async function loadPrintJob(accessToken, luluJobId) {
 }
 
 function buildSheetPayload(printData, statusData, fallbackExternalId, suppressNotifications = false) {
-  const lineItem = printData?.line_items?.[0] || {};
+  const lineItems = printData?.line_items || [];
+  const summary = summarizeLineItems(lineItems);
   const shippingAddress = printData?.shipping_address || {};
   const tracking = extractTracking(printData, statusData);
   const shippingDates = printData?.estimated_shipping_dates || {};
   const rawStatus = statusData?.name || printData?.status?.name || "";
   const costs = printData?.costs || {};
   const shippingCost = costs?.shipping_cost || {};
-  const lineItemCost = costs?.line_item_costs?.[0] || {};
+  const lineItemCosts = costs?.line_item_costs || [];
 
   return {
     luluJobId: printData?.id || "",
     externalId: printData?.external_id || fallbackExternalId || "",
-    product: lineItem?.title || "",
-    quantity: lineItem?.quantity || "",
+    product: summary.product,
+    quantity: summary.quantity,
 
-    // Deliberately blank on status sync. The buyer email came from Squarespace
-    // and already lives in the Sheet. Lulu contact_email is now DMOS-only.
     customerEmail: "",
 
     status: normalizeDashboardStatus(rawStatus),
     shippingLevel: printData?.shipping_level || printData?.shipping_option_level || "",
-    printCostExclTax: lineItemCost?.total_cost_excl_tax || "",
-    printCostInclTax: lineItemCost?.total_cost_incl_tax || "",
+    printCostExclTax: sumCost(lineItemCosts, "total_cost_excl_tax"),
+    printCostInclTax: sumCost(lineItemCosts, "total_cost_incl_tax"),
     shippingCostExclTax: shippingCost?.total_cost_excl_tax || "",
     shippingCostInclTax: shippingCost?.total_cost_incl_tax || "",
     totalCostExclTax: costs?.total_cost_excl_tax || "",
