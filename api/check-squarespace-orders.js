@@ -116,18 +116,6 @@ export default async function handler(req, res) {
         continue;
       }
 
-      // Current router creates one Lulu job per Squarespace order. Avoid silently
-      // creating duplicate Lulu external IDs if a customer mixes supported books.
-      if (matchingItems.length > 1) {
-        processed.push({
-          orderId: externalId,
-          orderNumber: squarespaceOrderNumber,
-          skipped: true,
-          reason: "multiple supported book line items require manual fulfillment"
-        });
-        continue;
-      }
-
       const alreadyProcessed = await orderAlreadyProcessed(externalId);
 
       if (alreadyProcessed) {
@@ -140,7 +128,6 @@ export default async function handler(req, res) {
         continue;
       }
 
-      const item = matchingItems[0];
       const raw = order.shippingAddress || {};
 
       const fullName =
@@ -149,8 +136,10 @@ export default async function handler(req, res) {
         "Test Customer";
 
       const payload = {
-        sku: item.sku,
-        quantity: item.quantity,
+        items: matchingItems.map((item) => ({
+          sku: item.sku,
+          quantity: Number(item.quantity) || 1
+        })),
         contactEmail: order.customerEmail || "",
         externalId,
         squarespaceOrderNumber,
